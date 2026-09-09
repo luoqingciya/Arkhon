@@ -27,10 +27,14 @@ static bool ensureLoaded() {
     g_hello = reinterpret_cast<HelloFn>(dlsym(h, "Hello"));
     g_add = reinterpret_cast<AddFn>(dlsym(h, "Add"));
     g_probe = reinterpret_cast<ProbeFn>(dlsym(h, "ProbeNetCrypto"));
-    if (!g_hello || !g_add || !g_probe) {
+    if (!g_hello || !g_add) {
         const char *e = dlerror();
         g_dlerror = e ? e : "dlsym failed";
         return false;
+    }
+    // ProbeNetCrypto 为可选探针（部分内核实测产物未必导出）；缺省视为 -2（不可用）
+    if (!g_probe) {
+        g_dlerror = "ProbeNetCrypto not exported (optional)";
     }
     ok = true;
     return ok;
@@ -44,7 +48,7 @@ static napi_value LoadGoHello(napi_env env, napi_callback_info info) {
     bool loaded = ensureLoaded();
     std::string hello = loaded ? std::string(g_hello(const_cast<char *>("arkhon"))) : std::string("<load-error>");
     int add = loaded ? g_add(2, 3) : -1;
-    int probe = loaded ? g_probe() : -1;
+    int probe = (loaded && g_probe) ? g_probe() : (loaded ? -2 : -1);
 
     napi_value v;
     napi_value field;

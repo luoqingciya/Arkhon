@@ -1,0 +1,11 @@
+# OHOS Go fork：第三方源码克隆，不入库（自行 build-toolchain.ps1 拉取）
+ohos_golang_go/
+
+# 临时校验目录
+_hapcheck/
+_ondevice/
+
+# 大体积构建产物 / 参考 .so（正式产物已随 entry/libs/arm64-v8a/libhellogo.so 入库）
+libhellogo-ohos.so
+libhellogo-ohos.h
+libhellogo-stock-linux.so

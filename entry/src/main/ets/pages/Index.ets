@@ -4,7 +4,7 @@
  * 操作：点击「启动 VPN」申请授权并拉起 VpnExtAbility（虚拟网卡 + 受限路由 + DNS），
  *       点击「停止 VPN」断开隧道；页面实时展示状态与扩展进程事件日志。
  */
-import { Want } from '@kit.AbilityKit';
+import { Want, childProcessManager } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { vpnExtension } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -30,6 +30,21 @@ struct Index {
   private observer: vpnExtension.VpnObserver | null = null;
 
   aboutToAppear(): void {
+    // T3 gate-A：原生子进程能力探测
+    let ark = 'n/a';
+    let native = 'n/a';
+    try {
+      native = String(childProcessManager.isNativeChildProcessSupported());
+    } catch (e) {
+      ark = 'err'; // 占位
+    }
+    try {
+      ark = String(childProcessManager.isArkChildProcessSupported());
+    } catch (e2) {
+      ark = 'err';
+    }
+    this.pushLog(`[T3] children: ark=${ark} native=${native}`);
+    hilog.info(DOMAIN, TAG, 'T3 children ark=%{public}s native=%{public}s', ark, native);
     // T2：启动即触发 Go .so 加载，便于 hilog 采集与验证
     this.runT2();
   }

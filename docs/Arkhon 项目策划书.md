@@ -3,6 +3,7 @@
 > 文档版本：v0.3（已按官方文档 + ClashBox 实证二次修订）
 > 日期：2026-09-09
 > 状态：待立项
+> **Phase 0 进展（2026-09-09）**：T1 VPN 能力 ✅（真机建链）· T2 工具链 ✅（Gate-B 真机通过，Go c-shared 可加载）→ **引擎 A（自编内核）障碍解除，路线实质收敛为 A**
 > 关联项目：[Teyvat Arkhon 桌面端](https://github.com/luoqingciya/Teyvat-Arkhon)（Electron + arkhon-core 内核，GPL-3.0）
 
 ---
@@ -44,6 +45,8 @@ Teyvat Arkhon 桌面端已提供基于 arkhon-core（mihomo fork）的完整代�
 > 每一项 PoC 结论在评审时都必须落为 **「继续 / 收缩 / 终止」** 三态之一，不能留模糊结论。
 
 > **现状基准（2026-09 二次评审）**：官方 `@ohos.net.vpnExtension`（API 11+）已向三方开放 VPN 虚拟网卡 + 路由管理，权限为公开项（`INTERNET`/`GET_NETWORK_INFO`/`ACCESS_EXTENSIONAL_DEVICE_DRIVER`），无需企业/MDM 权限；ClashBox 已携内置 FLclash 内核上架鸿蒙海外市场。据此，**"VPN 不受支持"与"内核编不进"两条触发信号均已低位化**，No-Go 判据主要退化为工程层面兜底，而非技术不可行。
+
+> **Gate-B 实测（Phase 0，Mate 80 Pro）**：原始 Go c-shared 因 musl `initial-exec TLS` 无法 dlopen，已改用 OpenHarmony SIG 官方 Go fork（`GOOS=openharmony`，内置 general dynamic `TLS_GD`）重编，真机 `T2 loaded=1` 加载成功——**「内核编不进去」的 No-Go 触发信号解除**，收窄到「VPN 不可用 / 真实内核隧道喂流受阻」的工程兜底。
 
 ---
 
