@@ -1,0 +1,10 @@
+# NDK 目录联接（指向宿主 DevEco，勿提交）
+/ndk
+# 探针构建产物
+*.so
+probe_aarch64
+libhellogo.so
+libhellogo.h
+# hilog 抓包
+hilog-full.txt
+*.log

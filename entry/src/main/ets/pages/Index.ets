@@ -8,9 +8,18 @@ import { Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { vpnExtension } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import goNative from 'libentry.so';
 
 const DOMAIN = 0x0000;
 const TAG = 'T1Page';
+
+interface GoHelloResult {
+  loaded: boolean;
+  hello: string;
+  add: number;
+  probe: number;
+  err: string;
+}
 
 @Entry
 @Component
@@ -19,6 +28,11 @@ struct Index {
   @State running: boolean = false;
   @State logs: string[] = [];
   private observer: vpnExtension.VpnObserver | null = null;
+
+  aboutToAppear(): void {
+    // T2：启动即触发 Go .so 加载，便于 hilog 采集与验证
+    this.runT2();
+  }
 
   build() {
     Column({ space: 16 }) {
@@ -31,19 +45,22 @@ struct Index {
         .fontSize(16)
         .fontColor(this.running ? '#00c853' : '#f57c00')
 
-      Button(this.running ? '停止 VPN' : '启动 VPN')
-        .width(200)
-        .onClick(() => {
+      Text('受限路由 10.22.0.0/16（非全量，防黑洞）')
+        .fontSize(12)
+        .fontColor('#999999')
+
+      Row({ space: 8 }) {
+        Button('启动 VPN').onClick(() => {
           if (this.running) {
             this.stopVpn();
           } else {
             this.startVpn();
           }
         })
-
-      Text('受限路由 10.22.0.0/16（非全量，防黑洞）')
-        .fontSize(12)
-        .fontColor('#999999')
+        Button('加载 Go .so (T2)').onClick(() => {
+          this.runT2();
+        })
+      }
 
       List({ space: 4 }) {
         ForEach(this.logs, (line: string, idx: number) => {
@@ -122,6 +139,25 @@ struct Index {
   private setRunning(v: boolean): void {
     this.running = v;
     this.status = v ? '已连接' : '未启动';
+  }
+
+  private runT2(): void {
+    try {
+      const raw = goNative.loadGoHello() as Record<string, Object>;
+      const r: GoHelloResult = {
+        loaded: raw.loaded as boolean,
+        hello: raw.hello as string,
+        add: raw.add as number,
+        probe: raw.probe as number,
+        err: (raw.err as string) ?? '',
+      };
+      this.pushLog(`[T2] loaded=${r.loaded} hello="${r.hello}" add=${r.add} probe=${r.probe} err="${r.err}"`);
+      hilog.info(DOMAIN, TAG, 'T2 loaded=%{public}d hello=%{public}s add=%{public}d probe=%{public}d err=%{public}s',
+        r.loaded ? 1 : 0, r.hello, r.add, r.probe, r.err);
+    } catch (e) {
+      const err = e as BusinessError;
+      this.fail(`[T2] loadGoHello 异常 code=${err.code} msg=${err.message}`);
+    }
   }
 
   private pushLog(line: string): void {
