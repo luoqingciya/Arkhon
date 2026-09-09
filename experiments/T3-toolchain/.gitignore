@@ -9,3 +9,5 @@ _ondevice/
 libhellogo-ohos.so
 libhellogo-ohos.h
 libhellogo-stock-linux.so
+libclash.so
+libclash.h

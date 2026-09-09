@@ -4,11 +4,13 @@
  * 操作：点击「启动 VPN」申请授权并拉起 VpnExtAbility（虚拟网卡 + 受限路由 + DNS），
  *       点击「停止 VPN」断开隧道；页面实时展示状态与扩展进程事件日志。
  */
-import { Want, childProcessManager } from '@kit.AbilityKit';
+import { Want, childProcessManager, common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { vpnExtension } from '@kit.NetworkKit';
+import { socket } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import goNative from 'libentry.so';
+import httpRequest from '@ohos.net.http';
 
 const DOMAIN = 0x0000;
 const TAG = 'T1Page';
@@ -21,6 +23,17 @@ interface GoHelloResult {
   err: string;
 }
 
+interface ClashVersionResult {
+  loaded: boolean;
+  version: string;
+  err: string;
+}
+
+interface ClashStartResult {
+  code: number;
+  err: string;
+}
+
 @Entry
 @Component
 struct Index {
@@ -28,6 +41,8 @@ struct Index {
   @State running: boolean = false;
   @State logs: string[] = [];
   private observer: vpnExtension.VpnObserver | null = null;
+  private proxyBuf: string = '';
+  private proxyDone: boolean = false;
 
   aboutToAppear(): void {
     // T3 gate-A：原生子进程能力探测
@@ -47,6 +62,8 @@ struct Index {
     hilog.info(DOMAIN, TAG, 'T3 children ark=%{public}s native=%{public}s', ark, native);
     // T2：启动即触发 Go .so 加载，便于 hilog 采集与验证
     this.runT2();
+    // T3 Gate-D：加载并启动真实内核（libclash.so），REST /version 回显即证明内核在跑
+    this.runClash();
   }
 
   build() {
@@ -74,6 +91,9 @@ struct Index {
         })
         Button('加载 Go .so (T2)').onClick(() => {
           this.runT2();
+        })
+        Button('内核启动 (T3)').onClick(() => {
+          this.runClash();
         })
       }
 
@@ -172,6 +192,96 @@ struct Index {
     } catch (e) {
       const err = e as BusinessError;
       this.fail(`[T2] loadGoHello 异常 code=${err.code} msg=${err.message}`);
+    }
+  }
+
+  private runClash(): void {
+    try {
+      const ver = goNative.clashVersion() as Record<string, Object>;
+      const v: ClashVersionResult = {
+        loaded: ver.loaded as boolean,
+        version: (ver.version as string) ?? '',
+        err: (ver.err as string) ?? '',
+      };
+      this.pushLog(`[T3] kernel loaded=${v.loaded} version="${v.version}" err="${v.err}"`);
+      hilog.info(DOMAIN, TAG, 'T3 kernel loaded=%{public}d version=%{public}s err=%{public}s',
+        v.loaded ? 1 : 0, v.version, v.err);
+      if (!v.loaded) {
+        return;
+      }
+      // 最小内核配置：loopback 混合代理 + REST controller（ArkTS 禁止未声明对象字面量，直接给字符串）
+      const cfg = '{"mode":"rule","log-level":"debug","bind-address":"127.0.0.1","mixed-port":1031,"dns":{"enable":false}}';
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const home = `${ctx.filesDir}/clash`;
+      const startRet = goNative.clashStart(home, cfg, '127.0.0.1:9097') as Record<string, Object>;
+      const s: ClashStartResult = {
+        code: startRet.code as number,
+        err: (startRet.err as string) ?? '',
+      };
+      this.pushLog(`[T3] kernel start code=${s.code} err="${s.err}"`);
+      hilog.info(DOMAIN, TAG, 'T3 kernel start code=%{public}d err=%{public}s', s.code, s.err);
+      if (s.code === 0) {
+        this.probeKernelRest();
+        this.probeProxyHttp();
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      this.fail(`[T3] runClash 异常 code=${err.code} msg=${err.message}`);
+    }
+  }
+
+  // REST /version 回显 == 真内核已在跑（signal of liveness）
+  private probeKernelRest(): void {
+    const httpCfg = httpRequest.createHttp();
+    httpCfg.request('http://127.0.0.1:9097/version',
+      { method: httpRequest.RequestMethod.GET, connectTimeout: 5000, readTimeout: 5000 })
+      .then((resp: httpRequest.HttpResponse) => {
+        const body = `${resp.result}`;
+        this.pushLog(`[T3] REST /version -> ${body}`);
+        hilog.info(DOMAIN, TAG, 'T3 REST /version %{public}s', body);
+        httpCfg.destroy();
+      })
+      .catch((err: BusinessError) => {
+        this.fail(`[T3] REST /version 失败 code=${err.code} msg=${err.message}`);
+        httpCfg.destroy();
+      });
+  }
+
+  // 数据面验证：经内核混合代理(127.0.0.1:1031)发真实 HTTP 请求。绝对 URL 形式即 HTTP proxy。
+  private probeProxyHttp(): void {
+    try {
+      const tcp = socket.constructTCPSocketInstance();
+      this.proxyBuf = '';
+      this.proxyDone = false;
+      tcp.on('message', (info: socket.SocketMessageInfo) => {
+        const ab = info.message as ArrayBuffer;
+        const bytes = new Uint8Array(ab);
+        let s = '';
+        for (const b of bytes) {
+          s += String.fromCharCode(b);
+        }
+        this.proxyBuf += s;
+        if (this.proxyBuf.indexOf('\r\n\r\n') >= 0 && !this.proxyDone) {
+          this.proxyDone = true;
+          const firstLine = this.proxyBuf.split('\r\n')[0];
+          this.pushLog(`[T3] proxy HTTP -> "${firstLine}" len=${this.proxyBuf.length}`);
+          hilog.info(DOMAIN, TAG, 'T3 proxy HTTP first=%{public}s len=%{public}d', firstLine, this.proxyBuf.length);
+          tcp.close();
+        }
+      });
+      tcp.on('error', (e: BusinessError) => {
+        this.fail(`[T3] proxy HTTP 错误 code=${e.code} msg=${e.message}`);
+      });
+      tcp.connect({ address: { address: '127.0.0.1', port: 1031 }, timeout: 5000 }).then(() => {
+        const req = 'GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nUser-Agent: arkhon-t3\r\nConnection: close\r\n\r\n';
+        tcp.send({ data: req });
+      }).catch((e: BusinessError) => {
+        tcp.close();
+        this.fail(`[T3] proxy connect 失败 code=${e.code} msg=${e.message}`);
+      });
+    } catch (e) {
+      const err = e as BusinessError;
+      this.fail(`[T3] probeProxyHttp 异常 code=${err.code} msg=${err.message}`);
     }
   }
 

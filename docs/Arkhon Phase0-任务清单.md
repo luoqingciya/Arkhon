@@ -125,7 +125,7 @@ Phase 0 验证本项目策划书依赖的三条硬事实，全部通过后进入
 | --- | --- | --- | --- |
 | T1 VPN 能力 | ✅ **继续** | 实机 API 26：虚拟网卡建立（系统解析 VpnConfig：address 10.21.0.2/32 + route 10.22.0.0/16 + DNS）；设置→VPN 出现 Arkhon 条目；授权弹窗正常 | 引擎 A/B1 的 VPN 接管面成立 |
 | T2 工具链 | 🟢 **通过（Gate-B 已关闭）** | 构建侧 ✅。运行侧 ❌（股票 Go initial-exec TLS 在 OHOS musl dlopen 失败）→ **正解 = openharmony-sig/ohos_golang_go 官方 fork（`GOOS=openharmony`，内置 `TLS_GD`）**，本机编译出 go1.24.5 宿主，重编 hellogo 后 TLS 变 `TLSDESC`（general dynamic）。**Mate 80 Pro 实测 `T2 loaded=1 hello="hello, arkhon"`**，initial-exec 报错消失 | 引擎 A（进程内内核）可行；用官方 fork 编 arkhon-core .so |
-| T3 内核保活 | 🟡 手机形态 **回退为继续（引擎 A 进程内）**；**Gate-B 工具链/可加载已关闭（真机验证）** | ClashBox：mihomo c-shared .so 经 NAPI 在 **VpnExtensionAbility 进程内**加载（requestId 绑 VpnConnection，不依赖子进程），gvisor-ohos 用户态栈对接 vpn fd；TLS 用 musl 兼容工具链绕开；保活靠 `backgroundModes` + `KEEP_BACKGROUND_RUNNING` + 模拟画中画 + **核心恢复**。**Gate-B 已真机 dlopen 通过（`loaded=1`）** | 主攻 **A 进程内内核**：官方 fork 编 arkhon-core .so → VpnExtension 内 NAPI 加载 → requestId 隧道喂流；进 **Gate-D** |
+| T3 内核保活 | 🟡 手机形态 **回退为继续（引擎 A 进程内）**；**Gate-B/D1-D4 已真机闭环**，剩 **Gate-D-D5 隧道喂流** | ClashBox：mihomo c-shared .so 经 NAPI 在 **VpnExtensionAbility 进程内**加载（requestId 绑 VpnConnection，不依赖子进程），gvisor-ohos 用户态栈对接 vpn fd。**Gate-D 真机实测**：`libclash.so`（真实 mihomo 1.10.0，`GOOS=openharmony`+`TLS_GD` 编出，93MB）→ NAPI dlopen → `hub.Parse` 起内核 → REST `{"meta":true,"version":"1.10.0"}` → 混合代理数据面 `HTTP/1.1 200 OK`。**内核可在手机进程内跑通 + 数据面通流已坐实** | 剩 **D5**：VpnExtension 内把 `requestId` 隧道 fd 喂给内核（gvisor-ohos 用户态栈 / TUN）实现系统流量接管 |
 | T4 构建/形态 | ⬜ | | |
 | **总体** | ⬜ 进行中 | | T1 通过，可进入 T2/T3 |
 
