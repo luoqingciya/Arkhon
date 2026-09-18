@@ -7,11 +7,11 @@
         "material": {
           "certpath": "C:\\Users\\Luoqingci\\.ohos\\config\\default_Arkhon_g3ZEBefgh5HSdEQK8EZOqewzWp_HCmOBp5k-_ubSooo=.cer",
           "keyAlias": "debugKey",
-          "keyPassword": "0000001BFBBDE382DE8BA9F34928A659C095CA583628D51403ED65719DF195AEAFAB4CF24AAD29F4BBC13A",
+          "keyPassword": "0000001B711FAFACD2ABDDB0A6B6719FBCD5EE029B6A819CC3AE831B2DA3C2FBE6C307435B56F972845CEC",
           "profile": "C:\\Users\\Luoqingci\\.ohos\\config\\default_Arkhon_g3ZEBefgh5HSdEQK8EZOqewzWp_HCmOBp5k-_ubSooo=.p7b",
           "signAlg": "SHA256withECDSA",
           "storeFile": "C:\\Users\\Luoqingci\\.ohos\\config\\default_Arkhon_g3ZEBefgh5HSdEQK8EZOqewzWp_HCmOBp5k-_ubSooo=.p12",
-          "storePassword": "0000001BFB2FFEF2830B12667AA4502973708FE61503F2D6B23A3A87E52CCDF6D34F97A6439F68EB006FDF"
+          "storePassword": "0000001BCAA39264B057D54537C276EADCF8601B6C646EFA8BFFE8ABDC11112B065ED31A4C3F0E7054B0DE"
         }
       }
     ],

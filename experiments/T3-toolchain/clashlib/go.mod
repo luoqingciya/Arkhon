@@ -2,7 +2,10 @@ module arkhon/clashlib
 
 go 1.24
 
-require github.com/metacubex/mihomo v0.0.0
+require (
+	github.com/metacubex/mihomo v0.0.0
+	golang.org/x/sys v0.30.0
+)
 
 require (
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
@@ -129,7 +132,6 @@ require (
 	golang.org/x/mod v0.20.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/term v0.29.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
@@ -139,3 +141,9 @@ require (
 )
 
 replace github.com/metacubex/mihomo => D:/Project/Teyvat-Arkhon/mihomo-teyvat
+
+// sing-tun 的 gvisor 栈 import 的是 metacubex/gvisor（默认走 module cache），
+// OHOS 沙箱对 VPN 隧道 fd 的 Fstat 会 EPERM → fdbased 创建失败 → gvisor 栈不可用。
+// 已把 fdbased.IsSocketFD 改为 getsockopt(SO_TYPE) 探测（本地副本 mihomo-teyvat/third_party/gvisor），
+// 这里 replace 到该副本，让 gvisor 栈在 OHOS 上可用。
+replace github.com/metacubex/gvisor => D:/Project/Teyvat-Arkhon/mihomo-teyvat/third_party/gvisor
