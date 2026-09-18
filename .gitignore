@@ -10,5 +10,6 @@
 /.clang-tidy
 **/.test
 /.appanalyzer
-# 大体积内核 .so（由 build-clashlib.ps1 重新生成，不入库）
+# 大体积 c-shared .so（由 build-clashlib.ps1 / download-clashlib.ps1 生成，不入库；构建前需先运行脚本获取）
 /entry/libs/arm64-v8a/libclash.so
+/entry/libs/arm64-v8a/libhellogo.so
