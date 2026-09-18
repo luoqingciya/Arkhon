@@ -77,10 +77,12 @@ static napi_value LoadGoHello(napi_env env, napi_callback_info info) {
 using VerFn  = char *(*)(void);
 using StartFn = char *(*)(char *, char *, char *);
 using StopFn  = void (*)(void);
+using AttachFn = char *(*)(int32_t);
 
 static void *g_clash = nullptr;
 static VerFn g_clashVer = nullptr;
 static StartFn g_clashStart = nullptr;
+static AttachFn g_clashAttach = nullptr;
 static StopFn g_clashStop = nullptr;
 static std::string g_clashErr;
 
@@ -98,6 +100,7 @@ static bool clashEnsureLoaded() {
     g_clashVer   = reinterpret_cast<VerFn>(dlsym(h, "arkhon_core_version"));
     g_clashStart = reinterpret_cast<StartFn>(dlsym(h, "arkhon_core_start"));
     g_clashStop  = reinterpret_cast<StopFn>(dlsym(h, "arkhon_core_stop"));
+    g_clashAttach = reinterpret_cast<AttachFn>(dlsym(h, "arkhon_core_attach")); // T3+D5 隧道喂流；旧 .so 可缺省
     if (!g_clashVer || !g_clashStart) {
         const char *e = dlerror();
         g_clashErr = e ? e : "dlsym clash symbols failed";
@@ -177,6 +180,41 @@ static napi_value ClashStop(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// clashAttach(fd): 把内核 TUN listener 挂到 VPN 隧道 fd（D5 喂流）。返回 { code, err }，code==0 成功。
+static napi_value ClashAttach(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t fd = -1;
+    if (argc > 0 && args[0]) {
+        napi_get_value_int32(env, args[0], &fd);
+    }
+    int code = -1;
+    std::string err = "libclash.so not loaded";
+    if (clashEnsureLoaded() && g_clashAttach) {
+        char *ret = g_clashAttach(fd);
+        if (ret) {
+            err = std::string(ret);
+            std::free(ret);
+            code = -2;
+        } else {
+            err = "";
+            code = 0;
+        }
+    } else if (g_clash && !g_clashAttach) {
+        err = "arkhon_core_attach not exported (旧 libclash 不含 D5 符号)，请重编 libclash.so";
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    napi_value field;
+    napi_create_int32(env, code, &field);
+    napi_set_named_property(env, result, "code", field);
+    napi_create_string_utf8(env, err.c_str(), NAPI_AUTO_LENGTH, &field);
+    napi_set_named_property(env, result, "err", field);
+    return result;
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
@@ -184,6 +222,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"clashVersion", nullptr, ClashVersion, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"clashStart", nullptr, ClashStart, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"clashStop", nullptr, ClashStop, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"clashAttach", nullptr, ClashAttach, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

@@ -8,6 +8,7 @@ import { Want, childProcessManager, common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { vpnExtension } from '@kit.NetworkKit';
 import { socket } from '@kit.NetworkKit';
+import { connection } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import goNative from 'libentry.so';
 import httpRequest from '@ohos.net.http';
@@ -77,25 +78,29 @@ struct Index {
         .fontSize(16)
         .fontColor(this.running ? '#00c853' : '#f57c00')
 
-      Text('受限路由 10.22.0.0/16（非全量，防黑洞）')
+      Text('全量默认路由 0.0.0.0/0（系统流量→隧道→内核→上游节点出网）')
         .fontSize(12)
         .fontColor('#999999')
 
-      Row({ space: 8 }) {
+      Flex({ wrap: FlexWrap.Wrap }) {
         Button('启动 VPN').onClick(() => {
           if (this.running) {
             this.stopVpn();
           } else {
             this.startVpn();
           }
-        })
+        }).margin({ right: 8, bottom: 8 })
         Button('加载 Go .so (T2)').onClick(() => {
           this.runT2();
-        })
+        }).margin({ right: 8, bottom: 8 })
         Button('内核启动 (T3)').onClick(() => {
           this.runClash();
+        }).margin({ right: 8, bottom: 8 })
+        Button('隧道出网').onClick(() => {
+          this.probeTunnelVpn();
         })
       }
+      .width('92%')
 
       List({ space: 4 }) {
         ForEach(this.logs, (line: string, idx: number) => {
@@ -120,17 +125,25 @@ struct Index {
   private startVpn(): void {
     try {
       // API 26：监听授权弹窗结果（点「允许/拒绝」回调）
-      if (this.observer === null) {
-        this.observer = vpnExtension.createVpnObserver();
-        this.observer.onAuthorizationResult((granted: boolean) => {
-          if (granted) {
-            this.setRunning(true);
-            this.pushLog('[UI] 系统授权通过，等待建链');
-          } else {
-            this.setRunning(false);
-            this.pushLog('[UI] 用户拒绝了授权');
-          }
-        });
+      // 部分设备（如平板）可能不支持 createVpnObserver，需容错处理
+      if (this.observer === null && typeof vpnExtension.createVpnObserver === 'function') {
+        try {
+          this.observer = vpnExtension.createVpnObserver();
+          this.observer.onAuthorizationResult((granted: boolean) => {
+            if (granted) {
+              this.setRunning(true);
+              this.pushLog('[UI] 系统授权通过，等待建链');
+              // D5e 关键：OHOS 三方 VPN 建链后系统不自动把应用流量切到 VPN 网络，
+              // fd-probe 证实主进程流量从未进隧道 → 需要把主进程显式 setAppNet 绑到 VPN 网络。
+              this.bindVpnNet(0);
+            } else {
+              this.setRunning(false);
+              this.pushLog('[UI] 用户拒绝了授权');
+            }
+          });
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, 'createVpnObserver not supported, skip auth observer');
+        }
       }
       // 该 SDK 的 startVpnExtensionAbility 单参且为 Want（目标扩展描述）
       const want: Want = {
@@ -140,6 +153,8 @@ struct Index {
       vpnExtension.startVpnExtensionAbility(want)
         .then(() => {
           this.pushLog('[UI] startVpnExtensionAbility ok（等待系统授权…）');
+          // 授权回调可能先于 VPN 网络注册，这里也兜底轮询绑定
+          this.bindVpnNet(0);
         })
         .catch((err: BusinessError) => {
           this.fail(`startVpnExtensionAbility 失败 code=${err.code} msg=${err.message}`);
@@ -148,6 +163,48 @@ struct Index {
       const err = e as BusinessError;
       this.fail(`startVpnExtensionAbility 异常 code=${err.code} msg=${err.message}`);
     }
+  }
+
+  // 轮询找到 BEARER_VPN 网络并 setAppNet 绑定主进程（最多 30 次 × 1s）
+  private bindVpnNet(tries: number): void {
+    if (tries > 30) {
+      this.pushLog('[D5e] 30s 内未发现 VPN 网络，放弃绑定');
+      return;
+    }
+    connection.getAllNets().then((nets: connection.NetHandle[]) => {
+      let found = false;
+      const scan = (i: number): void => {
+        if (found || i >= nets.length) {
+          if (!found) {
+            hilog.warn(DOMAIN, TAG, 'D5e no VPN net in %{public}d nets, retry=%{public}d', nets.length, tries);
+            setTimeout(() => { this.bindVpnNet(tries + 1); }, 1000);
+          }
+          return;
+        }
+        connection.getNetCapabilities(nets[i]).then((cap: connection.NetCapabilities) => {
+          if (cap.bearerTypes.includes(connection.NetBearType.BEARER_VPN)) {
+            found = true;
+            const vpnId = nets[i].netId;
+            connection.setAppNet(nets[i]).then(() => {
+              this.pushLog(`[D5e] 主进程已绑定 VPN 网络 netId=${vpnId}`);
+              hilog.info(DOMAIN, TAG, 'D5e setAppNet ok netId=%{public}d', vpnId);
+              // 绑定成功后主动跑一次隧道出网闭环验证
+              this.probeTunnelVpn();
+            }).catch((e: BusinessError) => {
+              this.fail(`[D5e] setAppNet 失败 code=${e.code} msg=${e.message}`);
+            });
+          } else {
+            scan(i + 1);
+          }
+        }).catch(() => {
+          scan(i + 1);
+        });
+      };
+      scan(0);
+    }).catch((e: BusinessError) => {
+      hilog.warn(DOMAIN, TAG, 'D5e getAllNets 失败 code=%{public}d retry=%{public}d', e.code, tries);
+      setTimeout(() => { this.bindVpnNet(tries + 1); }, 1000);
+    });
   }
 
   private stopVpn(): void {
@@ -174,6 +231,69 @@ struct Index {
   private setRunning(v: boolean): void {
     this.running = v;
     this.status = v ? '已连接' : '未启动';
+  }
+
+  private probeTunnelVpn(): void {
+    // D5e 系统流闭环验证：主进程普通 httpRequest → 系统 VPN 默认路由 → 隧道 fd → 扩展内核 → 上游节点。
+    // 先走 IP 直连（绕系统 DNS，隔离「数据面」与「DNS」两类问题）：example.com 真实 IP 93.184.216.34。
+    // 若 IP 探针 2xx/3xx/4xx（服务端已响应）→ 数据面闭环通，剩 DNS 分支问题；
+    // 再探域名 example.com → 数据面 + DNS 全链路验证。
+    try {
+      this.tunnelIpProbe();
+    } catch (e) {
+      const err = e as BusinessError;
+      this.fail(`[D5e] probeTunnelVpn 异常 code=${err.code} msg=${err.message}`);
+    }
+  }
+
+  private tunnelIpProbe(): void {
+    try {
+      const httpCfg = httpRequest.createHttp();
+      // 目标换 Cloudflare 现网 IP（93.184.216.34 已失效）：Host 头补齐后返回 200；
+      // 4xx 也证明数据面往返闭环（只有超时/拒绝才是链路失败）。
+      httpCfg.request('http://172.66.147.243/', {
+        method: httpRequest.RequestMethod.GET,
+        header: { 'Host': 'example.com' },
+        connectTimeout: 10000,
+        readTimeout: 10000
+      }).then((resp: httpRequest.HttpResponse) => {
+        const body = `${resp.result}`;
+        this.pushLog(`[D5e] 隧道出网(IP) code=${resp.responseCode} head=${body.slice(0, 40).replace(/\n/g, ' ')}`);
+        hilog.info(DOMAIN, TAG, 'D5e tunnel-out-ip code=%{public}d len=%{public}d', resp.responseCode, body.length);
+        httpCfg.destroy();
+        // IP 通了再试域名（走系统 DNS → 隧道）
+        this.tunnelDomainProbe();
+      }).catch((err: BusinessError) => {
+        this.fail(`[D5e] 隧道出网(IP) 失败 code=${err.code} msg=${err.message}`);
+        httpCfg.destroy();
+        this.tunnelDomainProbe();
+      });
+    } catch (e) {
+      const err = e as BusinessError;
+      this.fail(`[D5e] tunnelIpProbe 异常 code=${err.code} msg=${err.message}`);
+    }
+  }
+
+  private tunnelDomainProbe(): void {
+    try {
+      const httpCfg = httpRequest.createHttp();
+      httpCfg.request('http://example.com/', {
+        method: httpRequest.RequestMethod.GET,
+        connectTimeout: 15000,
+        readTimeout: 15000
+      }).then((resp: httpRequest.HttpResponse) => {
+        const body = `${resp.result}`;
+        this.pushLog(`[D5e] 隧道出网(域名) code=${resp.responseCode} head=${body.slice(0, 40).replace(/\n/g, ' ')}`);
+        hilog.info(DOMAIN, TAG, 'D5e tunnel-out-host code=%{public}d len=%{public}d', resp.responseCode, body.length);
+        httpCfg.destroy();
+      }).catch((err: BusinessError) => {
+        this.fail(`[D5e] 隧道出网(域名) 失败 code=${err.code} msg=${err.message}`);
+        httpCfg.destroy();
+      });
+    } catch (e) {
+      const err = e as BusinessError;
+      this.fail(`[D5e] tunnelDomainProbe 异常 code=${err.code} msg=${err.message}`);
+    }
   }
 
   private runT2(): void {

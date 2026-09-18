@@ -38,7 +38,10 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "go mod tidy failed: $LASTEXITCODE" }
 
   Write-Host '>>> go build c-shared ...'
-  & $goex build -buildmode=c-shared -o $out .
+  # -tags with_gvisor：mihomo 的 gvisor 用户态网栈是编译期选项（stub 默认不编入），
+  # 缺此 tag 时 sing_tun.New 直接报 "gVisor is not included in this build"，隧道 fd 无网栈消费 → 黑洞。
+  # -a：强制全量重编，规避 go build cache 混入旧 tag 产物导致 stub 分支被编入。
+  & $goex build -a -tags with_gvisor -buildmode=c-shared -o $out .
   if ($LASTEXITCODE -ne 0) { throw "go build failed: $LASTEXITCODE" }
 } finally { Pop-Location }
 

@@ -1,0 +1,6 @@
+{
+  "name": "libentry",
+  "version": "1.0.0",
+  "description": "Arkhon 原生桥（Go/libclash.so dlopen 包装）类型声明",
+  "types": "./Index.d.ts"
+}
