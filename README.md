@@ -67,7 +67,7 @@ vpn connection created, fd=33 addr=10.21.0.2 route=10.22.0.0/16  // 隧道 fd
 **关键技术决策（TUN 栈选型）**：
 - **首轮 system 栈失败**：`system` 栈 TCP 机制是「进程内 NAT：SYN 改写为目标 `127.0.0.1:随机端口` 并写回 fd，依赖宿主本机 TCP 栈完成握手后再交给 mihomo」。但 OHOS VPN 隧道 fd 写回路径是『发往 VPN 网络转发』而非『注入宿主协议栈』→ 改写后的 SYN 有去无回（真机 `/proc/net/tcp`：`10.21.0.2 → 公网IP:80` 状态 `SYN_SENT` 重传 N 次，SYN-ACK 永远缺席）。
 - **最终方案 gvisor 栈**：在用户态独立完成 TCP 握手，SYN-ACK 直接写回 fd，不依赖宿主栈。
-- **OHOS Fstat 绕过**：gvisor fdbased 创建端点时 `IsSocketFD` 调 `unix.Fstat` 被 OHOS 沙箱 EPERM → 已在 `mihomo-teyvat/third_party/gvisor/pkg/tcpip/link/fdbased/endpoint.go` 改为 `getsockopt(SO_TYPE)` 探测（受限环境容忍为 false → readv dispatcher）；`clashlib/go.mod` 加 `replace github.com/metacubex/gvisor => mihomo-teyvat/third_party/gvisor`；`clashlib/main.go` TUN 栈 `TunSystem`→`TunGvisor`、网段 `198.18.0.1/30`+`fdfe:dcba:9876::1/126`。
+- **OHOS Fstat 绕过**：gvisor fdbased 创建端点时 `IsSocketFD` 调 `unix.Fstat` 被 OHOS 沙箱 EPERM → 已在内核仓库 [arkhon-core](https://github.com/luoqingciya/arkhon-core) 的 `third_party/gvisor/pkg/tcpip/link/fdbased/endpoint.go` 改为 `getsockopt(SO_TYPE)` 探测（受限环境容忍为 false → readv dispatcher）；`clashlib/go.mod` 用仓库内相对 `replace github.com/metacubex/gvisor => ../third_party/gvisor`；`clashlib/main.go` TUN 栈 `TunSystem`→`TunGvisor`、网段 `198.18.0.1/30`+`fdfe:dcba:9876::1/126`。
 
 ## 产品定位
 
@@ -105,6 +105,17 @@ experiments/
   T2-toolchain/                             # 交叉编译探针（hellogo + NDK junction）
   T3-toolchain/                             # OHOS Go fork 自举 + GOOS=openharmony 交叉编译
 ```
+
+## 内核 .so 获取（clashlib 联动内核仓库）
+
+真实内核封装层 `clashlib` 已**迁入内核仓库** [arkhon-core](https://github.com/luoqingciya/arkhon-core) 的 `clashlib/` 目录（`go.mod` 相对 `replace` 到内核根），不再在本仓重复维护。得到 `entry/libs/arm64-v8a/libclash.so` 有两条路径（均在 `experiments/T3-toolchain/`）：
+
+- **本地交叉编译**：`build-clashlib.ps1` —— 用本地 `ohos_golang_go` fork 工具链 + DevEco NDK，交叉编译内核仓库的 `clashlib/` 并自动 stage 到 `entry/libs/arm64-v8a/libclash.so`（前置：`build-toolchain.ps1` 已产出 fork 的 `bin/go.exe`）。
+- **拉取 CI 预编译产物**：`download-clashlib.ps1 [tag]` —— 从 `arkhon-core` 的 GitHub Release 下载 `arkhon-ohos-arm64-<tag>.so`，改名 `libclash.so` 并 stage 到同目录（不含装 fork/NDK 时的快捷路径）。
+
+对应地在内核侧，`release-custom.yml` 的 `ohos` job 负责产出 `arkhon-ohos-arm64-<tag>.so`，两端联动闭环：内核 CI 产 `.so` → 鸿蒙端 `download-clashlib.ps1` 消费 → HAP 打包进 `arm64-v8a` → 进程内 `dlopen("libclash.so")` 起内核。
+
+> 该 job 的 OHOS SDK 原生工具链默认已内置（`cidownload.openharmony.cn` 的 `ohos-sdk-full_ohos` 20250819 归档，约 3GB）；内核仓库变量 `OHOS_NDK_URL` / `OHOS_NDK_NATIVE_ZIP` 可覆盖为更轻量的 public SDK 或固定归档。工具链自举（`ohos_golang_go` fork）或 NDK 下载失败时为软失败（仅跳过 `.so`，不影响桌面三平台资产）。
 
 ## 迭代目标里程碑
 
