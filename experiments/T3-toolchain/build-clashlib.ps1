@@ -1,4 +1,7 @@
 # 用 openharmony-sig/ohos_golang_go 交叉编译 clashlib（mihomo 内核封装）为 c-shared .so。
+# clashlib 源已迁入内核仓库 mihomo-teyvat/clashlib（go.mod 相对 replace 到内核根），
+# 本脚本只负责「用本地 OHOS fork 工具链 + DevEco NDK 交叉编译内核仓库的 clashlib」，
+# 并把产物 .so 直接 stage 到 entry/libs/arm64-v8a/libclash.so 供 HAP 打包。
 # 前置：T3-toolchain\build-toolchain.ps1 已产出 fork 的 bin\go.exe。
 $ErrorActionPreference = 'Stop'
 
@@ -10,6 +13,10 @@ if (-not (Test-Path $goex)) { throw "fork toolchain not built yet: $goex" }
 $ndk  = Join-Path $ex '..\T2-toolchain\ndk'       # 无空格 junction → DevEco native
 if (-not (Test-Path "$ndk\llvm\bin\clang.exe")) { throw "ndk missing: $ndk" }
 $sysroot = "$ndk\sysroot"
+
+# 内核仓库根（clashlib 已迁入 mihomo-teyvat/clashlib，go.mod 相对 replace 到内核根）
+$kernelRepo = Join-Path $ex '..\..\..\mihomo-teyvat'
+if (-not (Test-Path "$kernelRepo\clashlib\go.mod")) { throw "kernel clashlib missing: $kernelRepo\clashlib" }
 
 $env:GOROOT = $fork
 $env:Path   = "$fork\bin;$env:Path"
@@ -29,8 +36,10 @@ $env:GOTOOLCHAIN = 'local'    # 禁止 fork(1.24) 自动下载 host 版工具链
 $env:GOPROXY = 'https://goproxy.cn,direct'   # 直连 proxy.golang.org 被墙，走国内镜像
 $env:GOSUMDB  = 'off'
 
-$src = "$ex\clashlib"
-$out = "$ex\libclash.so"
+$src = "$kernelRepo\clashlib"
+$stageDir = "$ex\..\..\entry\libs\arm64-v8a"
+$out = "$stageDir\libclash.so"
+New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
 Push-Location $src
 try {
   Write-Host '>>> go mod tidy ...'
