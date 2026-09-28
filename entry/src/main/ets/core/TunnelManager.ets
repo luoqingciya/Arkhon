@@ -51,6 +51,7 @@ export class TunnelManager {
   private static monTick: number = 0;
   private static extKernelFails: number = 0;
   private static vpnMissCount: number = 0;
+  private static boundNetId: number = -1;
   private static graceUntil: number = 0;
   private static lastRecoverAt: number = 0;
   private static lastKeepRetryAt: number = 0;
@@ -137,6 +138,7 @@ export class TunnelManager {
     } catch (e) {
       hilog.warn(DOMAIN, TAG, '恢复默认网络失败（忽略）');
     }
+    TunnelManager.boundNetId = -1;
     TunnelManager.setState(TunnelState.Stopped, '隧道已断开');
     return TunnelManager.message();
   }
@@ -363,6 +365,7 @@ export class TunnelManager {
             found = true;
             const netId = nets[i].netId;
             connection.setAppNet(nets[i]).then(() => {
+              TunnelManager.boundNetId = netId;
               TunnelManager.log(`[绑定] 主进程已绑定 VPN 网络 netId=${netId}`);
               if (TunnelManager.state !== TunnelState.Running) {
                 TunnelManager.setState(TunnelState.Running, '隧道已连接');
@@ -385,6 +388,25 @@ export class TunnelManager {
       setTimeout(() => {
         TunnelManager.bindVpnNet(tries + 1);
       }, 1000);
+    });
+  }
+
+  /** 扩展内自愈会重建 VPN 网络（netId 变化）→ 主进程重绑，保证出网探测/订阅刷新仍走隧道 */
+  private static rebindVpnNet(netId: number): void {
+    connection.getAllNets().then((nets: connection.NetHandle[]) => {
+      for (const net of nets) {
+        if (net.netId === netId) {
+          connection.setAppNet(net).then(() => {
+            TunnelManager.boundNetId = netId;
+            TunnelManager.log(`[绑定] VPN 网络已重建，主进程重绑 netId=${netId}`);
+          }).catch((e: BusinessError) => {
+            TunnelManager.log(`[绑定] 重绑失败 code=${e.code} msg=${e.message}`);
+          });
+          return;
+        }
+      }
+    }).catch((e: BusinessError) => {
+      hilog.warn(DOMAIN, TAG, 'rebindVpnNet getAllNets 失败 code=%{public}d', e.code);
     });
   }
 
@@ -466,6 +488,10 @@ export class TunnelManager {
         TunnelManager.vpnMissCount++;
       } else {
         TunnelManager.vpnMissCount = 0;
+        // 扩展内自愈会重建 VPN 网络（netId 变化）→ 主进程重绑，保证自身出网探测/订阅刷新仍走隧道
+        if (netId !== TunnelManager.boundNetId) {
+          TunnelManager.rebindVpnNet(netId);
+        }
       }
       hilog.info(DOMAIN, TAG, '[自检] tick#%{public}d vpn-net=%{public}d miss=%{public}d',
         tick, netId, TunnelManager.vpnMissCount);

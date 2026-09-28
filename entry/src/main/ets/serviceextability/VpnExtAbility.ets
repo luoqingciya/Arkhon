@@ -45,6 +45,8 @@ const HEAL_SETTLE_MS = 800;            // 重建前等待旧连接释放
 const KLOG_CAP = 240;                  // klog 流常规行上限（调试期放大，便于抓浏览器流量）
 const KLOG_ERR_CAP = 240;              // klog 流错误行上限（常规行用满后仍继续透传）
 const KLOG_RETRY_MS = 2000;            // klog 流断线重连间隔
+const IF_HEAL_COOLDOWN_MS = 20000;     // 物理网卡变化 → 重建冷却（防抖动循环）
+const NET_EVT_DEBOUNCE_MS = 2000;      // 网络变化事件去抖
 
 export default class VpnExtAbility extends VpnExtensionAbility {
   private connection: vpnExtension.VpnConnection | null = null;
@@ -62,6 +64,16 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   // 内核日志流（断线自动重连）
   private klogRetry: number = -1;
   private klogSeq: number = 0;
+  // 物理网卡变化检测（网络切换后内核出口绑定失效 → 隧道悬挂的修复）
+  private appliedIfName: string = '';
+  private lastIfHealAt: number = 0;
+  private ifChecking: boolean = false;
+  private netEvtTimer: number = -1;
+  private netEvtArmed: boolean = false;
+  private netConn: connection.NetConnection | null = null;
+  private netCb: (data: connection.NetHandle) => void = () => {
+    this.scheduleUplinkCheck();
+  };
 
   onCreate(want: Want): void {
     hilog.info(DOMAIN, TAG, 'vpn onCreate, pid=%{public}d', process.pid);
@@ -199,6 +211,20 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   }
 
   private buildConfig(): vpnExtension.VpnConfig {
+    const v6Route: vpnExtension.RouteInfo = {
+      interface: '',
+      destination: { address: { family: 2, address: '::' }, prefixLength: 0 },
+      // M3·B1（2026-09-29）：v6 默认路由必须用「显式网关」写法（平台对 v6 的路由写法敏感）
+      // 实测：v4 同款「无网关（:: + hasGateway:false）」写法会被系统静默丢弃 → v6 直连泄漏；
+      //       改成显式网关后系统才安装（真机路由表可见 ::/0 via fdfe:dcba:9876::1 dev multitun-vpn1）
+      gateway: { family: 2, address: 'fdfe:dcba:9876::1' },
+      hasGateway: true,
+      isDefaultRoute: true
+    };
+    // M3·B1 留痕：记录下发的 v6 路由（排查/回归用）
+    hilog.info(DOMAIN, TAG, 'vpn cfg v6 route: dest=%{public}s/%{public}d gw=%{public}s hasGw=%{public}s',
+      v6Route.destination.address.address, v6Route.destination.prefixLength,
+      v6Route.gateway.address, String(v6Route.hasGateway));
     return {
       vpnId: 'arkhon-t1',
       addresses: [
@@ -213,15 +239,11 @@ export default class VpnExtAbility extends VpnExtensionAbility {
           hasGateway: false,
           isDefaultRoute: true
         },
-        {
-          interface: '',
-          destination: { address: { family: 2, address: '::' }, prefixLength: 0 },
-          gateway: { family: 2, address: '::' },
-          hasGateway: false,
-          isDefaultRoute: true
-        }
+        v6Route
       ],
       dnsAddresses: ['8.8.8.8', '223.5.5.5'],
+      // M3·B1：接管 IPv6（地址/路由已配置）；默认 false 时 v6 流量不进隧道（直连泄漏 / 被墙站点不可达）
+      isIPv6Accepted: true,
       blockedApplications: [],
     };
   }
@@ -235,7 +257,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     });
   }
 
-  private async pickPhysicalInterface(): Promise<string> {
+  private async pickPhysicalInterface(log: boolean = true): Promise<string> {
     let wifi = '';
     let eth = '';
     let cell = '';
@@ -268,8 +290,10 @@ export default class VpnExtAbility extends VpnExtensionAbility {
       hilog.warn(DOMAIN, TAG, 'pickPhysicalInterface 失败 code=%{public}d', err.code);
     }
     const picked = wifi !== '' ? wifi : (eth !== '' ? eth : cell);
-    hilog.info(DOMAIN, TAG, 'physical-if picked="%{public}s" (wifi="%{public}s" eth="%{public}s" cell="%{public}s")',
-      picked, wifi, eth, cell);
+    if (log) {
+      hilog.info(DOMAIN, TAG, 'physical-if picked="%{public}s" (wifi="%{public}s" eth="%{public}s" cell="%{public}s")',
+        picked, wifi, eth, cell);
+    }
     return picked;
   }
 
@@ -296,11 +320,13 @@ export default class VpnExtAbility extends VpnExtensionAbility {
         return;
       }
       this.appliedConfig = this.kernelConfig;
+      this.appliedIfName = ifName;
       const attachRet: ClashAttachResult = goNative.clashAttach(fd);
       hilog.info(DOMAIN, TAG, 'ext kernel attach fd=%{public}d code=%{public}d err=%{public}s',
         fd, attachRet.code, attachRet.err ?? '');
       this.kernelFails = 0;
       this.startHeartbeat();
+      this.armNetListeners();
       // 启动时挂一次内核日志流（REST /logs），运行日志进 hilog 供排障
       this.streamKernelLogs();
     } catch (e) {
@@ -358,6 +384,8 @@ export default class VpnExtAbility extends VpnExtensionAbility {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, 'heartbeat 异常 code=%{public}d msg=%{public}s', err.code, err.message);
     }
+    // 顺带检查物理网卡是否变化（网络切换 → 内核出口绑定失效 → 隧道悬挂，需重建）
+    this.checkUplink();
   }
 
   /**
@@ -396,6 +424,90 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     } else {
       finish();
     }
+  }
+
+  // ---------------------------------------------------------------- 物理网卡变化 → 重建
+
+  /** 注册网络变化事件（NetConnection 实例；失败仅告警，靠心跳轮询兜底） */
+  private armNetListeners(): void {
+    if (this.netEvtArmed) {
+      return;
+    }
+    try {
+      const nc: connection.NetConnection = connection.createNetConnection();
+      this.netConn = nc;
+      nc.on('netAvailable', this.netCb);
+      nc.on('netLost', this.netCb);
+      nc.register((err: BusinessError) => {
+        if (err) {
+          hilog.warn(DOMAIN, TAG, '[UPLINK] net events register 失败 code=%{public}d（靠心跳轮询兜底）', err.code);
+        } else {
+          hilog.info(DOMAIN, TAG, '[UPLINK] net listeners armed');
+        }
+      });
+      this.netEvtArmed = true;
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.warn(DOMAIN, TAG, '[UPLINK] net listeners 注册异常 code=%{public}d（靠心跳轮询兜底）', err.code);
+    }
+  }
+
+  /** 注销网络事件并清理去抖定时器（连接销毁 / 扩展退出时调用） */
+  private disarmNetListeners(): void {
+    this.netEvtArmed = false;
+    if (this.netEvtTimer >= 0) {
+      clearTimeout(this.netEvtTimer);
+      this.netEvtTimer = -1;
+    }
+    try {
+      if (this.netConn !== null) {
+        this.netConn.unregister((err: BusinessError) => {
+          if (err) {
+            hilog.warn(DOMAIN, TAG, '[UPLINK] net events unregister 失败 code=%{public}d（忽略）', err.code);
+          }
+        });
+      }
+    } catch (e) {
+      // ignore
+    }
+    this.netConn = null;
+  }
+
+  /** 网络事件去抖 → 触发网卡检查 */
+  private scheduleUplinkCheck(): void {
+    if (this.netEvtTimer >= 0) {
+      clearTimeout(this.netEvtTimer);
+    }
+    this.netEvtTimer = setTimeout(() => {
+      this.netEvtTimer = -1;
+      this.checkUplink();
+    }, NET_EVT_DEBOUNCE_MS);
+  }
+
+  /**
+   * 网卡变化检查：内核启动时把出口绑在当时的物理网卡（interface-name），网络切换后该绑定失效
+   * （拨号全部 timeout/unreachable，但 VPN 网络与本地探测仍"正常"，主进程自检发现不了）→ 隧道悬挂。
+   * 此处对比「当前应使用的物理网卡」与「已绑定网卡」，不一致 → 扩展内自愈（重探网卡 + 内核重建）。
+   */
+  private checkUplink(): void {
+    if (this.healing || this.ifChecking || !this.isUp) {
+      return;
+    }
+    this.ifChecking = true;
+    this.pickPhysicalInterface(false).then((picked: string) => {
+      this.ifChecking = false;
+      if (picked === '' || picked === this.appliedIfName || this.healing) {
+        return;
+      }
+      const now = Date.now();
+      if (now - this.lastIfHealAt < IF_HEAL_COOLDOWN_MS) {
+        return;
+      }
+      this.lastIfHealAt = now;
+      hilog.warn(DOMAIN, TAG, '[UPLINK] 物理网卡变化 %{public}s → %{public}s，触发重建',
+        this.appliedIfName, picked);
+      this.selfHeal(`物理网卡变化 ${this.appliedIfName}→${picked}`);
+    });
   }
 
   // ---------------------------------------------------------------- 诊断（日志流）
@@ -489,6 +601,8 @@ export default class VpnExtAbility extends VpnExtensionAbility {
       clearTimeout(this.klogRetry);
       this.klogRetry = -1;
     }
+    this.disarmNetListeners();
+    this.appliedIfName = '';
     this.isUp = false;
     try {
       if (this.connection !== null) {
