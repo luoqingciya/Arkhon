@@ -20,6 +20,10 @@
       },
       {
         "name": "ohos.permission.ACCESS_EXTENSIONAL_DEVICE_DRIVER"
+      },
+      {
+        // T3 保活基线：长时任务（隧道运行时驻留常驻通知）
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
       }
     ],
     "abilities": [
@@ -31,6 +35,13 @@
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
+        "backgroundModes": [
+          // T3 保活基线：长时任务类型 dataTransfer（隧道运行时驻留常驻通知）
+          "dataTransfer",
+          // T3 保活增强：静音音频保活（AVSession + 静音流）
+          // ⚠️ 实测已被系统静音检测反制（见 docs/T3-内核保活.md 实验 5），默认关闭、代码保留待复测
+          "audioPlayback"
+        ],
         "exported": true,
         "skills": [
           {

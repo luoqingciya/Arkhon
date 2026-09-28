@@ -5,6 +5,10 @@
   "main": "",
   "author": "",
   "license": "",
-  "dependencies": {}
+  "dependencies": {
+    // NAPI 原生模块类型声明（修复 IDE 侧 "Cannot find module 'libentry.so'"：
+    // hvigor 构建只按 .so 名解析，IDE 静态检查需要此处声明 file: 依赖才能解析到 Index.d.ts）
+    "libentry.so": "file:./src/main/cpp/types/libentry"
+  }
 }
 

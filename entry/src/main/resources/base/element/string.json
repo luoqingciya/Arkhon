@@ -2,19 +2,19 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "module description"
+      "value": "Arkhon 主模块"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "description"
+      "value": "Arkhon 网络工具"
     },
     {
       "name": "EntryAbility_label",
-      "value": "label"
+      "value": "Arkhon"
     },
     {
       "name": "VpnExtAbility_desc",
-      "value": "Arkhon VPN tunnel (T1)"
+      "value": "Arkhon 隧道服务"
     }
   ]
 }

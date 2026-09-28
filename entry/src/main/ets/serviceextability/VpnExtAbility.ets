@@ -13,13 +13,14 @@
  *    系统真实流量经隧道 fd → 内核代理链 → 上游节点出网；
  *  - T1 骨架期（无内核收包）用受限网段 10.22.0.0/16，防代理黑洞。
  */
-import { VpnExtensionAbility, vpnExtension, socket } from '@kit.NetworkKit';
+import { VpnExtensionAbility, vpnExtension, socket, connection } from '@kit.NetworkKit';
 import { Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import httpRequest from '@ohos.net.http';
 import fs from '@ohos.file.fs';
-import goNative from 'libentry.so';
+import process from '@ohos.process';
+import goNative, { ClashVersionResult, ClashStartResult, ClashAttachResult } from 'libentry.so';
 
 const TAG = 'VpnExtAbility';
 const DOMAIN = 0x0000;
@@ -30,18 +31,26 @@ const VPN_ROUTE_IP = '0.0.0.0';       // 全量默认路由（D5e 已放开；�
 const VPN_ROUTE_PREFIX = 0;
 const MAX_RETRY = 20;                  // 授权前 create 的重试上限（≈10s）
 const RETRY_INTERVAL_MS = 500;
+const RECOVER_RETRY = 2;               // 2203002（残留 VPN 连接）销毁重建尝试上限
+const HB_INTERVAL_MS = 60000;          // T3 保活：扩展进程心跳周期（存活取证）
 
 export default class VpnExtAbility extends VpnExtensionAbility {
   private connection: vpnExtension.VpnConnection | null = null;
   private retryTimer: number = -1;
   private isUp: boolean = false;
+  // T3 保活：扩展进程心跳（定时器只在进程未被冻结时触发 → 断档即冻结/回收证据）
+  private hbTimer: number = -1;
+  private hbCount: number = 0;
 
   onCreate(want: Want): void {
-    hilog.info(DOMAIN, TAG, 'vpn onCreate, want=%{public}s', JSON.stringify(want));
+    hilog.info(DOMAIN, TAG, 'vpn onCreate, pid=%{public}d want=%{public}s',
+      process.pid, JSON.stringify(want));
   }
 
   onDestroy(): void {
-    hilog.info(DOMAIN, TAG, 'vpn onDestroy');
+    hilog.info(DOMAIN, TAG, 'vpn onDestroy, pid=%{public}d hbCount=%{public}d',
+      process.pid, this.hbCount);
+    this.stopHeartbeat();
     this.teardown();
   }
 
@@ -79,9 +88,29 @@ export default class VpnExtAbility extends VpnExtensionAbility {
         })
         .catch((err: BusinessError) => {
           if (err.code === 2203002) {
-            // 网卡已存在（此前已建或重试已建）：视为成功，幂等处理
-            this.isUp = true;
-            hilog.info(DOMAIN, TAG, 'vpn already up（虚拟网卡已建立）');
+            // 网卡已存在。两种来源：
+            //  a) 本进程此前已建（isUp 应为 true，正常不会走到这）；
+            //  b) 上一进程被系统回收后系统重启本扩展进程，残留连接还在但 fd 已随旧进程丢失
+            //     → 必须 destroy + recreate 拿回新 fd，否则内核永远挂不上（隧道黑洞）。
+            if (attempt < RECOVER_RETRY) {
+              hilog.warn(DOMAIN, TAG, 'vpn existed (2203002), recover destroy+recreate attempt=%{public}d', attempt);
+              const conn = this.connection;
+              if (conn !== null) {
+                conn.destroy()
+                  .then(() => {
+                    hilog.info(DOMAIN, TAG, 'residual vpn destroyed, recreate');
+                    this.retryTimer = setTimeout(() => { this.tryCreate(attempt + 1); }, RETRY_INTERVAL_MS);
+                  })
+                  .catch((e2: BusinessError) => {
+                    this.isUp = true;
+                    hilog.error(DOMAIN, TAG, 'destroy residual failed code=%{public}d msg=%{public}s（内核未挂）',
+                      e2.code, e2.message);
+                  });
+              }
+            } else {
+              this.isUp = true;
+              hilog.warn(DOMAIN, TAG, 'vpn already up, no fd → kernel not attached（残留态放弃重建）');
+            }
             return;
           }
           if (attempt < MAX_RETRY && err.code === 2200002) {
@@ -176,13 +205,62 @@ export default class VpnExtAbility extends VpnExtensionAbility {
    * 再把隧道 fd attach 上去，并放开全量默认路由。
    * fd 是扩展进程私有的句柄，必须与本进程内的内核同进程才能 read/write。
    * 验证「系统流量 → fd → gvisor → 内核 → PROXY(上游 hysteria2 节点) → 出网」全链路闭环。
+   *
+   * T3 修正：interface-name 不再写死 wlan0（Wi-Fi 断开走蜂窝时，绑定无连通的网卡会让
+   * 上游拨号全部 context deadline exceeded）。改为运行时探测当前物理承载网卡。
    */
   private startKernelAndAttach(fd: number): void {
+    // 先探测物理承载网卡（Wi-Fi 优先，其次以太/蜂窝，跳过 VPN 自身），再起内核
+    this.pickPhysicalInterface().then((ifName: string) => {
+      this.startKernelWith(fd, ifName);
+    });
+  }
+
+  /** 探测当前物理承载网卡名（非 VPN）：Wi-Fi > 以太 > 蜂窝；失败返回空串 */
+  private async pickPhysicalInterface(): Promise<string> {
+    let wifi = '';
+    let eth = '';
+    let cell = '';
     try {
-      const ver = goNative.clashVersion() as Record<string, Object>;
+      const nets: connection.NetHandle[] = await connection.getAllNets();
+      for (const net of nets) {
+        try {
+          const cap: connection.NetCapabilities = await connection.getNetCapabilities(net);
+          if (cap.bearerTypes.includes(connection.NetBearType.BEARER_VPN)) {
+            continue; // 跳过 VPN 自身（否则拨号又兜回 tun）
+          }
+          const props: connection.ConnectionProperties = await connection.getConnectionProperties(net);
+          const name: string = props.interfaceName ?? '';
+          if (name === '') {
+            continue;
+          }
+          if (wifi === '' && cap.bearerTypes.includes(connection.NetBearType.BEARER_WIFI)) {
+            wifi = name;
+          } else if (eth === '' && cap.bearerTypes.includes(connection.NetBearType.BEARER_ETHERNET)) {
+            eth = name;
+          } else if (cell === '' && cap.bearerTypes.includes(connection.NetBearType.BEARER_CELLULAR)) {
+            cell = name;
+          }
+        } catch (e) {
+          // 单个 net 查询失败跳过
+        }
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.warn(DOMAIN, TAG, '[D5e] pickPhysicalInterface 失败 code=%{public}d msg=%{public}s', err.code, err.message);
+    }
+    const picked = wifi !== '' ? wifi : (eth !== '' ? eth : cell);
+    hilog.info(DOMAIN, TAG, '[D5e] physical-if picked="%{public}s" wifi="%{public}s" eth="%{public}s" cell="%{public}s"',
+      picked, wifi, eth, cell);
+    return picked;
+  }
+
+  private startKernelWith(fd: number, ifName: string): void {
+    try {
+      const ver: ClashVersionResult = goNative.clashVersion();
       hilog.info(DOMAIN, TAG, '[D5] ext kernel loaded=%{public}d version=%{public}s',
-        (ver.loaded as boolean) ? 1 : 0, String(ver.version ?? ''));
-      if (!(ver.loaded as boolean)) {
+        ver.loaded ? 1 : 0, ver.version ?? '');
+      if (!ver.loaded) {
         return;
       }
       const home = `${this.context.filesDir}/clash-ext`;   // 扩展进程自身上下文（勿用 getContext）
@@ -198,38 +276,80 @@ export default class VpnExtAbility extends VpnExtensionAbility {
       // ArkTS 禁止未声明对象字面量，故直接给 JSON 字符串。
       // log-file 用绝对路径（实测 mihomo 不 Join homeDir，相对名落盘失败导致 readKernelLog 报 ENOENT）。
       // 端口避开主进程 T3 内核占用的 9097/1031：扩展内核独用 9096(REST)/1032(mixed)，否则诊断打错内核。
+      // interface-name 绑定物理承载网卡：全量路由下上游 UDP(QUIC/hysteria2) 拨号会被默认路由兜回 tun 回环，
+      // protectProcessNet 对 UDP 不生效；绑定物理网卡 → 拨号流量直出，彻底绕开 tun。探测不到则省略该字段。
+      //
+      // TODO(M2)：proxies / proxy-groups / rules 应由「档案（订阅导入）」生成后下发；
+      //   D5e 阶段的测试节点与凭据已按 T3 收尾要求移除，当前为无凭据的最简配置（隧道直通）。
+      const ifPart = ifName !== '' ? '"interface-name":"' + ifName + '",' : '';
       const cfgStr = '{"mode":"rule","log-level":"debug","log-file":"' + home + '/clash.log",'
         + '"bind-address":"127.0.0.1","mixed-port":1032,'
         // D5e：打开内核 DNS，节点域名走 mihomo 内置 resolver，绕开鸿蒙扩展进程系统 resolver 异常（502 根因嫌疑之一）。
         + '"dns":{"enable":true,"nameserver":["223.5.5.5","8.8.8.8"]},'
-        // D5e：interface-name 强制上游拨号 socket 绑定物理网卡 wlan0。
-        // 全量路由下 UPN(QUIC/hysteria2) 的 UDP 拨号会被默认路由兜回 tun↺回环，protectProcessNet 对 UDP 不生效；
-        // 绑定网卡 → 拨号流量直出 wlan0，彻底绕开 tun（等效"对内核的 UDP 也 protect"）。
-        + '"interface-name":"wlan0",'
-        // D5e 诊断：先不传 mport（mihomo 可能不认该字段致节点建建失败）。
-        // 若去掉后 /proxies 出现 test-node 且 delay 有 ms → 问题就是 mport；
-        // 若仍只有默认组 → 是 cfgStr 整体没被 mihomo 采纳（hub.Parse 传参问题）。
-        + '"proxies":[{"name":"test-node","type":"hysteria2","server":"REDACTED-HOST","port":443,'
-        + '"password":"REDACTED-PASSWORD","alpn":["h3"],"client-fingerprint":"chrome","obfs":"salamander",'
-        + '"obfs-password":"REDACTED-OBFS","sni":"REDACTED-HOST"}],'
-        + '"proxy-groups":[{"name":"PROXY","type":"select","proxies":["test-node","DIRECT"]}],'
-        // D5e：私有/内网段 DNS 与局域网流量直连（否则系统 DNS 查询被 MATCH,PROXY 丢去远端节点导致解析失败）；
-        // 对外流量才走 PROXY 组 → hy2 节点出网。
-        + '"rules":["IP-CIDR,192.168.0.0/16,DIRECT","IP-CIDR,10.0.0.0/8,DIRECT","IP-CIDR,172.16.0.0/12,DIRECT","IP-CIDR,127.0.0.0/8,DIRECT","MATCH,PROXY"]}';
+        + ifPart
+        // 私有/内网段与其余流量暂走直连（无上游节点）；M2 接入档案后改为 MATCH,PROXY。
+        + '"rules":["IP-CIDR,192.168.0.0/16,DIRECT","IP-CIDR,10.0.0.0/8,DIRECT","IP-CIDR,172.16.0.0/12,DIRECT","IP-CIDR,127.0.0.0/8,DIRECT","MATCH,DIRECT"]}';
       hilog.info(DOMAIN, TAG, '[D5e] cfgStr=%{public}s', cfgStr);
-      const startRet = goNative.clashStart(home, cfgStr, '127.0.0.1:9096') as Record<string, Object>;
+      const startRet: ClashStartResult = goNative.clashStart(home, cfgStr, '127.0.0.1:9096');
       hilog.info(DOMAIN, TAG, '[D5] ext kernel start code=%{public}d err=%{public}s',
-        startRet.code as number, String(startRet.err ?? ''));
+        startRet.code, startRet.err ?? '');
       // attach 隧道 fd：成功则内核 TUN listener 绑定该 fd，系统下发的 IP 包进入内核代理链
-      const attachRet = goNative.clashAttach(fd) as Record<string, Object>;
+      const attachRet: ClashAttachResult = goNative.clashAttach(fd);
       hilog.info(DOMAIN, TAG, '[D5] ext kernel attach fd=%{public}d code=%{public}d err=%{public}s',
-        fd, attachRet.code as number, String(attachRet.err ?? ''));
+        fd, attachRet.code, attachRet.err ?? '');
+      // T3 保活：内核就位后启动扩展进程心跳（60s 一次，断档即冻结/回收证据）
+      this.startHeartbeat();
       // D5e 真机验证：全量默认路由下，用扩展进程内 @ohos.net.http 发真实请求，
       // 确认系统流量进隧道 fd → 内核 → 上游 hysteria2 节点出网（返回 200 即闭环）
       this.probeThroughTunnel();
     } catch (e) {
       const err = e as BusinessError;
       hilog.error(DOMAIN, TAG, '[D5] startKernelAndAttach 异常 code=%{public}d msg=%{public}s', err.code, err.message);
+    }
+  }
+
+  /**
+   * T3 扩展进程心跳：每 60s 打一条（含 pid 与本进程内核 REST 自探）。
+   * 该定时器只在扩展进程存活且未被冻结时触发 → 心跳断档 = 扩展进程被冻结/回收的直接证据。
+   */
+  private startHeartbeat(): void {
+    if (this.hbTimer >= 0) {
+      return;
+    }
+    this.hbCount = 0;
+    this.hbTimer = setInterval(() => { this.heartbeat(); }, HB_INTERVAL_MS);
+    hilog.info(DOMAIN, TAG, '[KEEP] ext heartbeat started pid=%{public}d interval=%{public}dms',
+      process.pid, HB_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.hbTimer >= 0) {
+      clearInterval(this.hbTimer);
+      this.hbTimer = -1;
+    }
+  }
+
+  private heartbeat(): void {
+    this.hbCount++;
+    const count = this.hbCount;
+    const pid = process.pid;
+    try {
+      const httpCfg = httpRequest.createHttp();
+      httpCfg.request('http://127.0.0.1:9096/version',
+        { method: httpRequest.RequestMethod.GET, connectTimeout: 5000, readTimeout: 5000 })
+        .then((resp: httpRequest.HttpResponse) => {
+          hilog.info(DOMAIN, TAG, '[KEEP] ext hb #%{public}d pid=%{public}d kernel=OK code=%{public}d',
+            count, pid, resp.responseCode);
+          httpCfg.destroy();
+        })
+        .catch((err: BusinessError) => {
+          hilog.warn(DOMAIN, TAG, '[KEEP] ext hb #%{public}d pid=%{public}d kernel=FAIL code=%{public}d msg=%{public}s',
+            count, pid, err.code, err.message);
+          httpCfg.destroy();
+        });
+    } catch (e) {
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, '[KEEP] heartbeat 异常 code=%{public}d msg=%{public}s', err.code, err.message);
     }
   }
 
