@@ -1,5 +1,9 @@
 /**
- * T3 · 保活基线工具（长时任务 + 常驻通知 + 回收检测）
+ * 保活基线工具：长时任务 + 常驻通知 + 回收检测
+ *
+ * 接线（M2 起）：由 core/TunnelManager 随隧道生命周期统筹——
+ *  - 隧道建链成功 → start；断开 → stop；热重载/重建 → refresh（避免重复申请报 9800005）；
+ *  - 收到系统取消/挂起事件 → 5s 内重申请（T3 实测结论「取消即重申请」，见 docs/T3-内核保活.md）。
  *
  * API 26 实测事实（SDK d.ts 核对）：
  *  - startBackgroundRunning(context, DATA_TRANSFER, wantAgent) 成功后由系统自动挂「常驻通知」（无提示音），
@@ -30,6 +34,11 @@ export class KeepAlive {
   /** 切换长时任务类型（配合静音音频保活）；切换后需重新 start 才生效 */
   static setModes(modes: string[]): void {
     KeepAlive.modes = modes;
+  }
+
+  /** 当前是否已持有长时任务（供调用方避免重复申请 9800005） */
+  static isStarted(): boolean {
+    return KeepAlive.started;
   }
 
   /** 申请 dataTransfer 长时任务（成功即挂常驻通知）。返回可读结果串，供 UI 日志。 */

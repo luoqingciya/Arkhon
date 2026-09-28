@@ -11,6 +11,14 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    "metadata": [
+      {
+        // 沉浸光感（液态玻璃）应用级开关：enable 后列表内组件默认套用系统材质，
+        // 自绘组件经 systemMaterial 属性接入（见 views/Theme.ets glass()）；仅 entry 模块生效
+        "name": "ohos.arkui.UIMaterial.state",
+        "value": "enable"
+      }
+    ],
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"

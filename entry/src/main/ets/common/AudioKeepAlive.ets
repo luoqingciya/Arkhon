@@ -74,7 +74,7 @@ export class AudioKeepAlive {
       const renderer: audio.AudioRenderer = await audio.createAudioRenderer(options);
       AudioKeepAlive.renderer = renderer;
       renderer.on('audioInterrupt', (ev: audio.InterruptEvent) => {
-        // 被其他应用打断时仅记录：写循环若因此中断，由上层重启（PoC 范围）
+        // 被其他应用打断时仅记录：本模块默认关闭、仅作回归验证，不自动重启写循环
         hilog.warn(DOMAIN, TAG, '[KEEP-A] audioInterrupt type=%{public}d hint=%{public}d',
           ev.eventType, ev.hintType);
       });

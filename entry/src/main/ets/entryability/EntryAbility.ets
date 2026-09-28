@@ -1,12 +1,22 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { ProfileStore } from '../core/ProfileStore';
+import { TunnelManager } from '../core/TunnelManager';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+    // M2：档案库与隧道服务在 UI 之前就绪（AppStorage 状态键随之建立）
+    try {
+      ProfileStore.init(this.context);
+      TunnelManager.init(this.context);
+    } catch (e) {
+      hilog.error(DOMAIN, 'testTag', 'M2 初始化失败: %{public}s', JSON.stringify(e));
+    }
   }
 
   onDestroy(): void {
@@ -24,6 +34,25 @@ export default class EntryAbility extends UIAbility {
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
     });
+
+    // 沉浸式系统栏：状态栏/导航条透明 + 浅色图标，页面渐变经 expandSafeArea 铺满两端，消除上下色差
+    try {
+      const win: window.Window = windowStage.getMainWindowSync();
+      win.setWindowLayoutFullScreen(true).catch((e: BusinessError) => {
+        hilog.warn(DOMAIN, 'testTag', 'setWindowLayoutFullScreen 失败 code=%{public}d', e.code);
+      });
+      const props: window.SystemBarProperties = {
+        statusBarColor: '#00000000',
+        statusBarContentColor: '#FFFFFF',
+        navigationBarColor: '#00000000',
+        navigationBarContentColor: '#FFFFFF'
+      };
+      win.setWindowSystemBarProperties(props).catch((e: BusinessError) => {
+        hilog.warn(DOMAIN, 'testTag', 'setWindowSystemBarProperties 失败 code=%{public}d', e.code);
+      });
+    } catch (err) {
+      hilog.error(DOMAIN, 'testTag', '设置沉浸系统栏失败: %{public}s', JSON.stringify(err));
+    }
 
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
