@@ -4,9 +4,11 @@
  * 说明：
  *  - 内核 arkhon_core_start(home, cfg, ctrl) 接受 YAML/JSON 文本，JSON 为 YAML 子集，直接用 JSON 拼装；
  *  - 「进程相关」字段（log-file / interface-name）由扩展进程在启动内核前注入（见 VpnExtAbility）；
- *  - 组与规则对齐桌面端：节点 ≥2 生成 AUTO（url-test，lazy）并置于 PROXY 首位，规则仅保留私网直连 + MATCH。
+ *  - 组与规则对齐桌面端：节点 ≥2 生成 AUTO（url-test，lazy）并置于 PROXY 首位；
+ *    规则 = 私网直连前缀 + 分流预设（RulePresets，opt-in）+ MATCH 兜底。
  */
 import { Profile, ProxyNode } from '../model/Types';
+import { presetRuleLines } from './RulePresets';
 
 /** 默认端口/参数（与扩展进程内核保持一致：ext 内核独立占用 1032/9096） */
 export const EXT_MIXED_PORT = 1032;
@@ -206,8 +208,10 @@ export function proxyToKernelJson(p: ProxyNode): string {
   return `{${kv.join(',')}}`;
 }
 
-/** 档案 → 完整内核配置 JSON（不含 log-file / interface-name，由扩展进程注入） */
-export function buildKernelConfig(profile: Profile | null, mixedPort: number, logLevel: string): string {
+/** 档案 → 完整内核配置 JSON（不含 log-file / interface-name，由扩展进程注入）
+ *  presetIds：分流预设勾选（RulePresets id），展开顺序 = ad → direct-cn → stream → ai，置于私网直连之后、MATCH 之前 */
+export function buildKernelConfig(profile: Profile | null, mixedPort: number, logLevel: string,
+  presetIds: string[] = []): string {
   const nodes: ProxyNode[] = profile !== null ? profile.nodes : [];
   const names: string[] = [];
   const proxies: string[] = [];
@@ -240,9 +244,13 @@ export function buildKernelConfig(profile: Profile | null, mixedPort: number, lo
     '"IP-CIDR,192.168.0.0/16,DIRECT"',
     '"IP-CIDR,10.0.0.0/8,DIRECT"',
     '"IP-CIDR,172.16.0.0/12,DIRECT"',
-    '"IP-CIDR,127.0.0.0/8,DIRECT"',
-    hasProxy ? '"MATCH,PROXY"' : '"MATCH,DIRECT"'
+    '"IP-CIDR,127.0.0.0/8,DIRECT"'
   ];
+  // 分流预设（opt-in）：广告拦截 → 国内直连 → 流媒体 → AI，先于 MATCH 兜底
+  for (const line of presetRuleLines(presetIds)) {
+    rules.push(`"${line}"`);
+  }
+  rules.push(hasProxy ? '"MATCH,PROXY"' : '"MATCH,DIRECT"');
 
   const parts: string[] = [];
   parts.push('"mode":"rule"');

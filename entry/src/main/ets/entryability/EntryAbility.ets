@@ -55,7 +55,9 @@ export default class EntryAbility extends UIAbility {
     }
 
     try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+      // 全暗色 UI（提瓦特暗色玻璃拟态）：声明应用级深色模式，
+      // 系统材质（HdsTabs 悬浮条 / 系统弹层）随深色渲染，避免浅灰玻璃与暗色主题割裂
+      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }

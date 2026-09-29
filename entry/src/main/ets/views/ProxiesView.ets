@@ -214,7 +214,7 @@ export struct ProxiesView {
           .onClick(() => {
             this.selectNode(r);
           })
-        }, (r: ProxyRow) => `${r.name}-${this.delayOfRow(r)}`)
+        }, (r: ProxyRow) => `${r.name}-${this.delayOfRow(r)}-${r.selected ? 1 : 0}`)
       }
     }
     .width('100%')
@@ -250,6 +250,8 @@ export struct ProxiesView {
     this.note = '';
     const groups: GroupRow[] = [];
     const rows: ProxyRow[] = [];
+    // 出口链下钻（PROXY → AUTO 等组 → 最终节点）：高亮真正生效的节点
+    const egress = this.ultimateEgress(resp);
     const keys = Object.keys(resp.proxies);
     for (const k of keys) {
       const item: KernelProxyItem = resp.proxies[k];
@@ -275,7 +277,7 @@ export struct ProxiesView {
           name: n.name,
           type: item !== undefined ? item.type : n.type,
           delay: item !== undefined ? this.historyDelay(item) : 0,
-          selected: this.isSelectedInProxy(resp, n.name)
+          selected: egress === n.name
         });
       }
     } else {
@@ -291,7 +293,7 @@ export struct ProxiesView {
           name: k,
           type: item.type,
           delay: this.historyDelay(item),
-          selected: this.isSelectedInProxy(resp, k)
+          selected: egress === k
         });
       }
     }
@@ -346,9 +348,21 @@ export struct ProxiesView {
     return last !== undefined && Number.isFinite(last.delay) ? last.delay : 0;
   }
 
-  private isSelectedInProxy(resp: KernelProxiesResp, name: string): boolean {
-    const g = resp.proxies['PROXY'];
-    return g !== undefined && g.now === name;
+  /** 出口链下钻：从 PROXY 起沿组链（AUTO 等）走到叶节点，返回最终出口名 */
+  private ultimateEgress(resp: KernelProxiesResp): string {
+    let cur = 'PROXY';
+    for (let depth = 0; depth < 8; depth++) {
+      const item: KernelProxyItem | undefined = resp.proxies[cur];
+      if (item === undefined) {
+        return '';
+      }
+      const next = item.now;
+      if (next === undefined || next === '') {
+        return cur; // 叶节点（无 now）
+      }
+      cur = next;
+    }
+    return '';
   }
 
   private delayOfRow(r: ProxyRow): number {

@@ -7,7 +7,13 @@
 import httpRequest from '@ohos.net.http';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { KernelDelayResp, KernelProxiesResp, KernelVersionResp } from '../model/Types';
+import {
+  KernelConnectionsResp,
+  KernelDelayResp,
+  KernelProxiesResp,
+  KernelRulesResp,
+  KernelVersionResp
+} from '../model/Types';
 
 const DOMAIN = 0x0000;
 const TAG = 'KernelRest';
@@ -69,6 +75,70 @@ export class KernelRest {
       return JSON.parse(body) as KernelProxiesResp;
     } catch (e) {
       destroySafe(http);
+      return null;
+    }
+  }
+
+  /** /rules：当前生效规则列表（失败返回 null） */
+  static async rules(): Promise<KernelRulesResp | null> {
+    const http = httpRequest.createHttp();
+    const t0 = Date.now();
+    try {
+      const resp = await http.request(`${BASE}/rules`, {
+        method: httpRequest.RequestMethod.GET,
+        connectTimeout: CONNECT_TIMEOUT,
+        readTimeout: CONNECT_TIMEOUT
+      });
+      destroySafe(http);
+      const body = typeof resp.result === 'string' ? resp.result : `${resp.result}`;
+      hilog.info(DOMAIN, TAG, 'rules code=%{public}d bytes=%{public}d ms=%{public}d',
+        resp.responseCode, body.length, Date.now() - t0);
+      if (resp.responseCode !== 200) {
+        return null;
+      }
+      const parsed = JSON.parse(body) as KernelRulesResp;
+      if (!Array.isArray(parsed.rules)) {
+        // 防御：非数组（含 null）统一归一为空缺，避免调用方遍历时抛异常
+        parsed.rules = undefined;
+      }
+      return parsed;
+    } catch (e) {
+      destroySafe(http);
+      const err = e as BusinessError;
+      hilog.warn(DOMAIN, TAG, 'rules 失败 code=%{public}d msg=%{public}s ms=%{public}d',
+        err.code, err.message, Date.now() - t0);
+      return null;
+    }
+  }
+
+  /** /connections：当前活跃连接（供规则命中统计聚合；失败返回 null） */
+  static async connections(): Promise<KernelConnectionsResp | null> {
+    const http = httpRequest.createHttp();
+    const t0 = Date.now();
+    try {
+      const resp = await http.request(`${BASE}/connections`, {
+        method: httpRequest.RequestMethod.GET,
+        connectTimeout: CONNECT_TIMEOUT,
+        readTimeout: CONNECT_TIMEOUT
+      });
+      destroySafe(http);
+      const body = typeof resp.result === 'string' ? resp.result : `${resp.result}`;
+      hilog.info(DOMAIN, TAG, 'connections code=%{public}d bytes=%{public}d ms=%{public}d',
+        resp.responseCode, body.length, Date.now() - t0);
+      if (resp.responseCode !== 200) {
+        return null;
+      }
+      const parsed = JSON.parse(body) as KernelConnectionsResp;
+      if (!Array.isArray(parsed.connections)) {
+        // 防御：mihomo 无活跃连接时返回 "connections": null，统一归一为空数组
+        parsed.connections = [];
+      }
+      return parsed;
+    } catch (e) {
+      destroySafe(http);
+      const err = e as BusinessError;
+      hilog.warn(DOMAIN, TAG, 'connections 失败 code=%{public}d msg=%{public}s ms=%{public}d',
+        err.code, err.message, Date.now() - t0);
       return null;
     }
   }

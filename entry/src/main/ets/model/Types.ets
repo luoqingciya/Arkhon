@@ -85,12 +85,19 @@ export interface DelayEntry {
   at: number;           // 记录时间戳
 }
 
+/** 全局设置（M3） */
+export interface StoreSettings {
+  /** 分流预设勾选（RulePresets id） */
+  rulePresets: string[];
+}
+
 /** 本地持久化数据（store.json） */
 export interface StoreData {
   profiles: Profile[];
   activeId: string;
   /** 延迟缓存：档案 id → 节点名 → 最近延迟 */
   delays: Record<string, Record<string, DelayEntry>>;
+  settings?: StoreSettings;
 }
 
 /** 导入结果（可读报错） */
@@ -124,6 +131,34 @@ export interface KernelDelayHistory {
 /** 内核 /proxies 响应 */
 export interface KernelProxiesResp {
   proxies: Record<string, KernelProxyItem>;
+}
+
+/** 内核 /rules 单项（type 为内核侧大写：DOMAIN-SUFFIX / IP-CIDR / MATCH 等） */
+export interface KernelRuleItem {
+  type: string;
+  payload: string;
+  proxy: string;
+}
+
+/** 内核 /rules 响应 */
+export interface KernelRulesResp {
+  rules?: KernelRuleItem[];
+}
+
+/** 内核连接元数据（仅取命中统计所需字段；ArkTS 不允许内联对象类型，单独声明） */
+export interface KernelConnectionMeta {
+  rule?: string;
+  rulePayload?: string;
+}
+
+/** 内核 /connections 单项（仅取命中统计所需字段） */
+export interface KernelConnection {
+  metadata?: KernelConnectionMeta;
+}
+
+/** 内核 /connections 响应 */
+export interface KernelConnectionsResp {
+  connections?: KernelConnection[];
 }
 
 /** 内核 /version 响应 */

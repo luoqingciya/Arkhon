@@ -120,6 +120,7 @@ hdc install -r entry\build\default\outputs\default\entry-default-signed.hap
 | [T3-内核保活](docs/T3-内核保活.md) | 内核实载 + 保活 5 项真机实验 |
 | [T4-构建](docs/T4-构建.md) | 构建 / 安装脚本、三形态基准、日志取证方法 |
 | [后续开发计划](docs/Arkhon%20后续开发计划.md) | M2–M4 逐项任务、进度与排查记录 |
+| [想法-卓易通容器流量接管](docs/想法-卓易通容器流量接管.md) | 接管范围扩展：ClashBox「兼容模式」参考与待讨论议题（待讨论） |
 
 ## 相关项目
 

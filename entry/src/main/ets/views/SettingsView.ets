@@ -8,6 +8,7 @@ import goNative, { GoHelloResult, ClashVersionResult } from 'libentry.so';
 import { AudioKeepAlive } from '../common/AudioKeepAlive';
 import { KernelRest } from '../core/KernelRest';
 import { ProfileStore } from '../core/ProfileStore';
+import { RulePreset, RULE_PRESETS } from '../core/RulePresets';
 import { TunnelManager, KEY_KEEP, KEY_LOGS } from '../core/TunnelManager';
 import { T } from './Theme';
 
@@ -20,11 +21,17 @@ export struct SettingsView {
   @StorageLink(KEY_LOGS) logs: string[] = [];
   @State diag: string[] = [];
   @State audioOn: boolean = false;
+  @State presetIds: string[] = [];
+
+  aboutToAppear(): void {
+    this.presetIds = ProfileStore.rulePresetIds();
+  }
 
   build() {
     Scroll() {
       Column({ space: 12 }) {
         this.KeepCard()
+        this.PresetCard()
         this.DiagCard()
         this.LogCard()
         this.AboutCard()
@@ -35,6 +42,53 @@ export struct SettingsView {
     .width('100%')
     .height('100%')
     .align(Alignment.Top)
+  }
+
+  @Builder
+  PresetCard() {
+    Column({ space: 10 }) {
+      Text('分流预设')
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(T.text)
+        .width('100%')
+      Text('内置离线域名规则集（不依赖 geoip 数据）；开启/关闭会热重载内核配置。规则顺序：广告拦截 → 国内直连 → 流媒体 → AI → MATCH 兜底。')
+        .fontSize(11)
+        .fontColor(T.dim)
+        .width('100%')
+      ForEach(RULE_PRESETS, (p: RulePreset) => {
+        Row({ space: 8 }) {
+          Column({ space: 2 }) {
+            Text(p.label)
+              .fontSize(13)
+              .fontColor(T.text)
+              .width('100%')
+            Text(`${p.desc} · ${p.domains.length} 条 → ${p.policy}`)
+              .fontSize(10)
+              .fontColor(T.dim)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+
+          Toggle({ type: ToggleType.Switch, isOn: this.isPresetOn(p.id) })
+            .onChange((on: boolean) => {
+              this.togglePreset(p.id, on);
+            })
+        }
+        .width('100%')
+        .padding(10)
+        .backgroundColor(T.panel)
+        .borderRadius(T.radiusS)
+      }, (p: RulePreset) => p.id)
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(T.card)
+    .borderRadius(T.radius)
+    .border({ width: 1, color: T.cardBorder })
   }
 
   @Builder
@@ -280,6 +334,29 @@ export struct SettingsView {
         this.push(`[保活增强] ${msg}`);
       });
     }
+  }
+
+  private isPresetOn(id: string): boolean {
+    return this.presetIds.indexOf(id) >= 0;
+  }
+
+  private togglePreset(id: string, on: boolean): void {
+    if (this.isPresetOn(id) === on) {
+      return; // 忽略 isOn 初值/程序化触发的重复回调
+    }
+    const next: string[] = [];
+    for (const pid of this.presetIds) {
+      if (pid !== id) {
+        next.push(pid);
+      }
+    }
+    if (on) {
+      next.push(id);
+    }
+    this.presetIds = next;
+    ProfileStore.setRulePresets(next);
+    TunnelManager.onRulesChanged();
+    this.push(`[分流] 预设「${id}」${on ? '开启' : '关闭'}（当前启用 ${next.length} 项）`);
   }
 }
 

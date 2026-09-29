@@ -10,7 +10,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { buffer } from '@kit.ArkTS';
-import { DelayEntry, ImportKind, ImportResult, Profile, StoreData } from '../model/Types';
+import { DelayEntry, ImportKind, ImportResult, Profile, StoreData, StoreSettings } from '../model/Types';
 import { parseSubscriptionText } from './UriParser';
 
 const DOMAIN = 0x0000;
@@ -175,6 +175,21 @@ export class ProfileStore {
     return m === undefined ? {} : m;
   }
 
+  /** 分流预设勾选（未设置/非法时返回空数组 = 全关） */
+  static rulePresetIds(): string[] {
+    const s = ProfileStore.data.settings;
+    return s === undefined ? [] : s.rulePresets;
+  }
+
+  static setRulePresets(ids: string[]): void {
+    const s: StoreSettings = ProfileStore.data.settings !== undefined
+      ? ProfileStore.data.settings
+      : { rulePresets: [] };
+    s.rulePresets = ids;
+    ProfileStore.data.settings = s;
+    ProfileStore.save();
+  }
+
   private static addProfile(name: string, url: string, res: ImportResult): void {
     const p: Profile = {
       id: `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
@@ -238,7 +253,7 @@ async function fetchText(url: string): Promise<FetchResult> {
 }
 
 function emptyStore(): StoreData {
-  return { profiles: [], activeId: '', delays: {} };
+  return { profiles: [], activeId: '', delays: {}, settings: { rulePresets: [] } };
 }
 
 function normalize(parsed: StoreData): StoreData {
@@ -252,6 +267,10 @@ function normalize(parsed: StoreData): StoreData {
   out.activeId = typeof parsed.activeId === 'string' ? parsed.activeId : '';
   if (parsed.delays !== undefined && parsed.delays !== null) {
     out.delays = parsed.delays;
+  }
+  const s = parsed.settings;
+  if (s !== undefined && s !== null && Array.isArray(s.rulePresets)) {
+    out.settings = { rulePresets: s.rulePresets };
   }
   return out;
 }

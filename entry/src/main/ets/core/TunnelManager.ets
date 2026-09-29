@@ -171,6 +171,13 @@ export class TunnelManager {
     }
   }
 
+  /** 分流预设发生变化（设置页勾选）后调用：运行中则热重载内核配置 */
+  static onRulesChanged(): void {
+    if (TunnelManager.state === TunnelState.Running) {
+      TunnelManager.restart('分流预设变更，热重载内核配置');
+    }
+  }
+
   /** 单次自检（设置页诊断按钮亦可触发） */
   static monitorOnce(): void {
     TunnelManager.doMonitor();
@@ -310,7 +317,7 @@ export class TunnelManager {
   }
 
   private static buildWant(profile: Profile | null): Want {
-    const cfg = buildKernelConfig(profile, EXT_MIXED_PORT, 'info');
+    const cfg = buildKernelConfig(profile, EXT_MIXED_PORT, 'info', ProfileStore.rulePresetIds());
     const want: Want = {
       bundleName: BUNDLE,
       abilityName: EXT_ABILITY,

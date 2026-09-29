@@ -20,6 +20,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { OverviewView } from '../views/OverviewView';
 import { ProfilesView } from '../views/ProfilesView';
 import { ProxiesView } from '../views/ProxiesView';
+import { RulesView } from '../views/RulesView';
 import { SettingsView } from '../views/SettingsView';
 import { T } from '../views/Theme';
 
@@ -131,6 +132,15 @@ struct Index {
           .height('100%')
           .padding({ bottom: FLOATING_BAR_SPACE })
         }.tabBar(this.BarItem('设置', 3))
+
+        TabContent() {
+          Column() {
+            RulesView()
+          }
+          .width('100%')
+          .height('100%')
+          .padding({ bottom: FLOATING_BAR_SPACE })
+        }.tabBar(this.BarItem('规则', 4))
       }
       .layoutWeight(1)
       .barPosition(BarPosition.End)
@@ -190,6 +200,7 @@ struct Index {
         this.SideItem('订阅', 1)
         this.SideItem('节点', 2)
         this.SideItem('设置', 3)
+        this.SideItem('规则', 4)
         Blank()
         Text('悬浮导航 · 液态玻璃')
           .fontSize(10)
@@ -248,8 +259,10 @@ struct Index {
         ProfilesView()
       } else if (this.navIndex === 2) {
         ProxiesView()
-      } else {
+      } else if (this.navIndex === 3) {
         SettingsView()
+      } else {
+        RulesView()
       }
     }
     .layoutWeight(1)
@@ -287,7 +300,10 @@ struct Index {
     if (this.navIndex === 2) {
       return '节点与策略组';
     }
-    return '设置';
+    if (this.navIndex === 3) {
+      return '设置';
+    }
+    return '规则与分流';
   }
 }
 
@@ -302,6 +318,9 @@ class NavIcons {
     }
     if (idx === 2) {
       return $r('sys.symbol.ohos_wifi');
+    }
+    if (idx === 4) {
+      return $r('sys.symbol.list_bullet');
     }
     return $r('sys.symbol.gearshape');
   }
